@@ -3,11 +3,11 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 
-from utils import auto_corr
+from utils import complete_auto_corr
 from gan import Generator, Discriminator
 
 
-REGIME = 0
+REGIME = 1
 BATCH_SIZE_G = 256
 BATCH_SIZE_D = 512
 MINIBATCH_SIZE = 32
@@ -25,24 +25,17 @@ def load_data():
     y = np.load('../data/y.npy')
     y = torch.tensor(y, dtype=torch.float32)
     X = X[y == REGIME]
-    X = (X - X.min()) / (X.max() - X.min())
+    X = (X - X.mean()) / X.std()
     X = X.reshape(-1, 1, 1, 96)
     return X
 
-def stat_loss(fake_data, X):
+def stat_loss(fake_data, auto_corr, mean, std):
     fake_data = fake_data.reshape(-1, 1, 9, 96)
-    fake_data_diff = fake_data[:, :, :, 1:] - fake_data[:, :, :, :-1]
-    X_diff = X[:, :, :, 1:] - X[:, :, :, :-1]
-    return sum([
-        (fake_data.mean() - X.mean())**2,
-        (fake_data_diff.mean() - X_diff.mean())**2,
-        (fake_data.std() - X.std())**2,
-        (fake_data_diff.std() - X_diff.std())**2,
-    ] + [
-        (3/4)**i * (auto_corr(fake_data, i).mean() - auto_corr(X, i).mean())**2 for i in range(10)
-    ] + [
-        (3/4)**i * (auto_corr(fake_data_diff, i).mean() - auto_corr(X_diff, i).mean())**2 for i in range(10)
-    ])
+    mean_loss = torch.sum((fake_data.mean() - mean)**2)
+    std_loss = torch.sum((fake_data.std() - std)**2)
+    fake_auto_corr = complete_auto_corr(fake_data, 10)
+    auto_corr_loss = torch.sum((fake_auto_corr.mean(axis=1) - auto_corr.mean(axis=1))**2)
+    return mean_loss + std_loss + auto_corr_loss
 
 def reset_model(model):
     for layer in model.children():
@@ -53,7 +46,7 @@ def train_discriminator(optimizer, model, criterion, X):
     optimizer.zero_grad()
 
     indices = np.random.choice(X.shape[0], MINIBATCH_SIZE * 9, replace=False)
-    real_data = X[indices].reshape(-1, 1, 9, 96).to(device)
+    real_data = X[indices].reshape(-1, 1, 9, 96)
     real_data = real_data + 0.001 * torch.randn_like(real_data, device=device)
     D_real = model(real_data)
     D_real_loss = criterion(D_real, torch.ones_like(D_real))
@@ -67,11 +60,11 @@ def train_discriminator(optimizer, model, criterion, X):
     optimizer.step()
     return D_real_loss, D_fake_loss
 
-def train_generator(optimizer, discriminator, generator, criterion, X):
+def train_generator(optimizer, discriminator, generator, criterion, auto_corr, mean, std):
     optimizer.zero_grad()
 
     fake_data = generator(torch.randn(MINIBATCH_SIZE, NOISE_DIM, 1, 1, device=device))[:,:,:,25:-25]
-    G_stat_loss = stat_loss(fake_data, X)
+    G_stat_loss = stat_loss(fake_data, auto_corr, mean, std)
 
     output = discriminator(fake_data)
     G_disc_loss = criterion(output, torch.ones_like(output))
@@ -82,6 +75,9 @@ def train_generator(optimizer, discriminator, generator, criterion, X):
     return G_stat_loss, G_disc_loss
 
 def train(n_sub_epochs, num_epochs, X):
+    auto_corr = complete_auto_corr(X, 10)
+    mean = X.mean()
+    std = X.std()
     epoch = 0
     best_score = float('inf')
     for sub_epoch in n_sub_epochs:
@@ -95,7 +91,7 @@ def train(n_sub_epochs, num_epochs, X):
         for _ in range(sub_epoch[1]):
             epoch += 1
             for _ in range(BATCH_SIZE_G):
-                G_stat_loss, G_disc_loss = train_generator(optimizer_G, D, G, criterion, X)
+                G_stat_loss, G_disc_loss = train_generator(optimizer_G, D, G, criterion, auto_corr, mean, std)
             print(f"Epoch {epoch}/{num_epochs}, G Stat Loss: {G_stat_loss.item()}, G Disc Loss: {G_disc_loss.item()}")
 
         if G_stat_loss < best_score:
@@ -107,7 +103,7 @@ def train(n_sub_epochs, num_epochs, X):
     return best_G
 
 if __name__ == '__main__':
-    X = load_data()
+    X = load_data().to(device)
     D = Discriminator().to(device)
     G = Generator(NOISE_DIM).to(device)
 

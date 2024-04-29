@@ -9,3 +9,6 @@ def auto_cov(X, lag=1):
 
 def auto_corr(X, lag=1):
     return auto_cov(X, lag) / auto_cov(X, 0)
+
+def complete_auto_corr(X, max_lag=100):
+    return torch.cat([auto_corr(X, lag).reshape(1, -1) for lag in range(max_lag)], axis=0)

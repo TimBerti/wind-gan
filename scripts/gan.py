@@ -1,4 +1,3 @@
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -60,6 +59,7 @@ class Generator(nn.Module):
         x = self.conv4(x)
         x = self.conv5(x)
         x = self.conv6(x)
+        x = self.residual_blocks(x)
         return x
 
 class Discriminator(nn.Module):
